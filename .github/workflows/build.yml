@@ -1,0 +1,122 @@
+name: Build RPi5 Installer
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      talos_version:
+        description: 'Talos version (e.g. v1.13.0)'
+        required: true
+        default: 'v1.13.0'
+
+env:
+  REGISTRY: ghcr.io
+  USERNAME: ${{ github.repository_owner }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set Talos version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "talos_version=${{ inputs.talos_version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "talos_version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: imjasonh/setup-crane@v0.4
+        with:
+          version: v0.20.5
+
+      - name: Build installer image
+        env:
+          TALOS_VERSION: ${{ steps.version.outputs.talos_version }}
+        run: |
+          mkdir -p _out
+          docker run --rm -t \
+            -v "${PWD}/_out:/out" \
+            "ghcr.io/siderolabs/imager:${TALOS_VERSION}" \
+            installer \
+            --arch arm64 \
+            --overlay-name=rpi_5 \
+            --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
+
+      - name: Push installer image
+        env:
+          TALOS_VERSION: ${{ steps.version.outputs.talos_version }}
+        run: |
+          crane push \
+            _out/installer-arm64.tar \
+            "${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${TALOS_VERSION}"
+
+      - name: Build metal disk image
+        env:
+          TALOS_VERSION: ${{ steps.version.outputs.talos_version }}
+        run: |
+          docker run --rm -t \
+            -v "${PWD}/_out:/out" \
+            -v /dev:/dev --privileged \
+            "ghcr.io/siderolabs/imager:${TALOS_VERSION}" \
+            metal \
+            --arch arm64 \
+            --overlay-name=rpi_5 \
+            --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0 \
+            --base-installer-image="${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${TALOS_VERSION}"
+
+      - name: Compress disk image
+        run: |
+          if [ ! -f _out/metal-arm64.raw.zst ]; then
+            zstd --rm _out/metal-arm64.raw -o _out/metal-arm64.raw.zst
+          fi
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TALOS_VERSION: ${{ steps.version.outputs.talos_version }}
+        run: |
+          gh release create \
+            "${{ github.ref_name }}" \
+            _out/metal-arm64.raw.zst \
+            --title "${{ github.ref_name }}" \
+            --notes "$(cat <<'EOF'
+          > ⚠️ Experimental build, use at your own risk.
+
+          Talos Linux **${TALOS_VERSION}** for Raspberry Pi 5 using the official \`rpi_5\` overlay.
+
+          ### Install
+
+          - **Fresh install**: Flash \`metal-arm64.raw.zst\` to your SD card / NVMe
+            ```bash
+            zstd -d metal-arm64.raw.zst | dd of=/dev/sdX bs=4M status=progress
+            ```
+
+          - **Upgrade existing node**:
+            ```bash
+            talosctl upgrade --nodes <NODE_IP> --image ghcr.io/${{ env.USERNAME }}/installer:${{ github.ref_name }}
+            ```
+          EOF
+          )"
