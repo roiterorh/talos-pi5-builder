@@ -102,6 +102,25 @@ if [ ! -d "${CHECKOUTS}/pkgs" ]; then
 
   cp "${CHECKOUTS}/rpi5-config-arm64" "${CHECKOUTS}/pkgs/kernel/build/config-arm64"
 
+  # Skip hardening checks that don't apply to the RPi vendor kernel:
+  #   - CONFIG_ARM64_GCS: requires Armv9.4-A; RPi5 Cortex-A76 is Armv8.2-A
+  #   - others: simply not present in the 6.12.25 RPi vendor config
+  FILTER_SCRIPT="${CHECKOUTS}/pkgs/kernel/build/scripts/filter-hardened-check.py" \
+  python3 - << 'PYEOF'
+import os
+path = os.environ['FILTER_SCRIPT']
+text = open(path).read()
+additions = (
+    "        'CONFIG_ARM64_GCS', # requires Armv9.4-A; RPi5 Cortex-A76 is Armv8.2-A\n"
+    "        'CONFIG_ARM64_BTI_KERNEL', # not in RPi vendor kernel config\n"
+    "        'CONFIG_ZERO_CALL_USED_REGS', # not in RPi vendor kernel config\n"
+    "        'CONFIG_HARDENED_USERCOPY_DEFAULT_ON', # not in RPi vendor kernel config\n"
+)
+marker = "    'arm64': {\n"
+text = text.replace(marker, marker + additions, 1)
+open(path, 'w').write(text)
+PYEOF
+
   ${GIT} -C "${CHECKOUTS}/pkgs" commit -am "rpi5: use raspberrypi/linux ${RPI_KERNEL_VERSION}"
 fi
 
