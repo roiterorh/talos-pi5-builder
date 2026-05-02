@@ -71,13 +71,14 @@ jobs:
       - name: Extract RPi5 kernel config (apply patch to pkgs v1.11.0)
         run: |
           git clone --depth 1 --branch v1.11.0 https://github.com/siderolabs/pkgs.git pkgs-v1110
-          git -C pkgs-v1110 am talos-rpi5-builder/patches/siderolabs/pkgs/0001-Patched-for-Raspberry-Pi-5.patch
+          # Use absolute path — git -C changes git's cwd so relative paths resolve inside the repo
+          git -C pkgs-v1110 am "$GITHUB_WORKSPACE/talos-rpi5-builder/patches/siderolabs/pkgs/0001-Patched-for-Raspberry-Pi-5.patch"
           cp pkgs-v1110/kernel/build/config-arm64 rpi5-config-arm64
 
       - name: Extract RPi5 module list (apply patch to talos v1.11.5)
         run: |
           git clone --depth 1 --branch v1.11.5 https://github.com/siderolabs/talos.git talos-v1115
-          git -C talos-v1115 am talos-rpi5-builder/patches/siderolabs/talos/0001-Patched-for-Raspberry-Pi-5.patch
+          git -C talos-v1115 am "$GITHUB_WORKSPACE/talos-rpi5-builder/patches/siderolabs/talos/0001-Patched-for-Raspberry-Pi-5.patch"
           cp talos-v1115/hack/modules-arm64.txt rpi5-modules-arm64.txt
 
       # ── Patch siderolabs/pkgs at target version ───────────────────────────────

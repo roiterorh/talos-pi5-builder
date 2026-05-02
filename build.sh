@@ -1,179 +1,159 @@
 #!/usr/bin/env bash
-# Build a Talos RPi5 installer with a custom RPi kernel.
+# Build a Talos RPi5 installer with a custom RPi kernel and push to GHCR.
 #
-# WHY custom kernel: the official Talos kernel (6.18.x) + sbc-raspberrypi DTBs
-# (from RPi 6.12.25) cause a version mismatch — RP1 southbridge doesn't
-# initialise, leaving no Ethernet and no USB. Building with the RPi kernel
-# (stable_20250428 / 6.12.25) keeps kernel and DTBs in sync.
+# WHY: official Talos kernel (6.18.x) + sbc-raspberrypi DTBs (RPi 6.12.25)
+# create a version mismatch — RP1 southbridge never inits, so no Ethernet
+# and no USB. Building with raspberrypi/linux stable_20250428 (6.12.25) keeps
+# kernel and DTBs in sync.
 #
-# Usage: ./build.sh [TALOS_VERSION]
-#   TALOS_VERSION  default: v1.13.0
+# Usage:
+#   ./build.sh [TALOS_VERSION]       # defaults to v1.13.0
 #
-# Env overrides:
-#   REGISTRY   default: ghcr.io
-#   USERNAME   default: roiterorh
-#   PUSH       set to "false" to skip pushing (default: true)
-#   OUT_DIR    default: ./_out
-#   KEEP       set to "true" to keep checkout directories after build
+# Key env overrides:
+#   REGISTRY    default: ghcr.io
+#   USERNAME    default: roiterorh
+#   PUSH        default: true  (set false to skip pushing)
+#   CLEAN       default: false (set true to delete checkouts/ before starting)
 #
-# Requirements: git, docker (logged in to GHCR), crane or docker, make
-# Runs best on an ARM64 host — cross-compiling adds ~3× build time.
+# Requirements:
+#   git, docker (logged in: docker login ghcr.io -u roiterorh), crane (optional)
 set -euo pipefail
 
 TALOS_VERSION=${1:-v1.13.0}
-# PKG_VERSION tracks siderolabs/pkgs; matches TALOS_VERSION for official releases
 PKG_VERSION=${PKG_VERSION:-${TALOS_VERSION%.*}.0}
 REGISTRY=${REGISTRY:-ghcr.io}
 USERNAME=${USERNAME:-roiterorh}
 PUSH=${PUSH:-true}
-OUT_DIR=${OUT_DIR:-${PWD}/_out}
-KEEP=${KEEP:-false}
-WORK_DIR=$(mktemp -d)
+CLEAN=${CLEAN:-false}
 
-# RPi stable kernel (6.12.25) — same source used by sbc-raspberrypi:v0.2.0 DTBs
 RPI_KERNEL_VERSION=stable_20250428
 RPI_KERNEL_SHA256=c95906cfbc7808de5860c6d86537bea22e3501f600a5209de59a86cb436886f6
 RPI_KERNEL_SHA512=0ed5d490c491e590b5980dccf6fcac0dd3c47accbfacd40d91507c12801cff34fa6a1c68991c8a6c57bb259c909121414766f35a0b11c4bd5d62c3e11d710839
-
-# Overlay: official sbc-raspberrypi:v0.2.0 DTBs built from the same RPi 6.12.25 source
 OVERLAY_NAME=rpi_5
 OVERLAY_IMAGE=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
 
-KERNEL_IMAGE="${REGISTRY}/${USERNAME}/kernel:${TALOS_VERSION}-rpi5"
-INSTALLER_IMAGE="${REGISTRY}/${USERNAME}/installer:${TALOS_VERSION}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHECKOUTS="${SCRIPT_DIR}/checkouts"
+OUT_DIR="${SCRIPT_DIR}/_out"
+PATCHES_DIR="${CHECKOUTS}/talos-rpi5-builder/patches"
+GIT="git -c user.email=bot@build -c user.name=bot"
 
-cleanup() {
-  if [ "${KEEP}" != "true" ] && [ -d "${WORK_DIR}" ]; then
-    rm -rf "${WORK_DIR}"
-  fi
-}
-trap cleanup EXIT
+[ "${CLEAN}" = "true" ] && rm -rf "${CHECKOUTS}"
+mkdir -p "${CHECKOUTS}" "${OUT_DIR}"
 
-echo "==> Talos ${TALOS_VERSION} | RPi kernel ${RPI_KERNEL_VERSION}"
-echo "==> Kernel:    ${KERNEL_IMAGE}"
-echo "==> Installer: ${INSTALLER_IMAGE}"
-echo "==> Work dir:  ${WORK_DIR}"
+echo "==> Talos ${TALOS_VERSION}  |  RPi kernel ${RPI_KERNEL_VERSION}"
+echo "==> Registry: ${REGISTRY}/${USERNAME}"
 echo ""
-mkdir -p "${OUT_DIR}"
 
+# ── 1. Clone talos-rpi5 patches (reference build) ─────────────────────────────
+if [ ! -d "${CHECKOUTS}/talos-rpi5-builder" ]; then
+  echo "==> Cloning talos-rpi5/talos-builder (for patches)..."
+  git clone --depth 1 https://github.com/talos-rpi5/talos-builder.git \
+    "${CHECKOUTS}/talos-rpi5-builder"
+fi
 
-# ── 1. Get RPi5 kernel config and module list via the existing talos-rpi5 patch ─
-echo "==> Extracting RPi5 kernel config from talos-rpi5/talos-builder..."
-git clone --depth 1 https://github.com/talos-rpi5/talos-builder.git "${WORK_DIR}/talos-rpi5-builder"
+# ── 2. Extract RPi5 kernel config ─────────────────────────────────────────────
+if [ ! -f "${CHECKOUTS}/rpi5-config-arm64" ]; then
+  echo "==> Extracting RPi5 kernel config (patching pkgs v1.11.0)..."
+  git clone --depth 1 --branch v1.11.0 \
+    https://github.com/siderolabs/pkgs.git "${CHECKOUTS}/pkgs-v1110"
+  ${GIT} -C "${CHECKOUTS}/pkgs-v1110" \
+    am "${PATCHES_DIR}/siderolabs/pkgs/0001-Patched-for-Raspberry-Pi-5.patch"
+  cp "${CHECKOUTS}/pkgs-v1110/kernel/build/config-arm64" \
+     "${CHECKOUTS}/rpi5-config-arm64"
+fi
 
-# Apply original patch to v1.11.0 pkgs to extract the RPi5 kernel config
-git clone --depth 1 --branch v1.11.0 https://github.com/siderolabs/pkgs.git "${WORK_DIR}/pkgs-v1110"
-git -C "${WORK_DIR}/pkgs-v1110" -c user.email="bot@build" -c user.name="bot" \
-  am "${WORK_DIR}/talos-rpi5-builder/patches/siderolabs/pkgs/0001-Patched-for-Raspberry-Pi-5.patch"
-RPI5_CONFIG="${WORK_DIR}/pkgs-v1110/kernel/build/config-arm64"
+# ── 3. Extract RPi5 module list ────────────────────────────────────────────────
+if [ ! -f "${CHECKOUTS}/rpi5-modules-arm64.txt" ]; then
+  echo "==> Extracting RPi5 module list (patching talos v1.11.5)..."
+  git clone --depth 1 --branch v1.11.5 \
+    https://github.com/siderolabs/talos.git "${CHECKOUTS}/talos-v1115"
+  ${GIT} -C "${CHECKOUTS}/talos-v1115" \
+    am "${PATCHES_DIR}/siderolabs/talos/0001-Patched-for-Raspberry-Pi-5.patch"
+  cp "${CHECKOUTS}/talos-v1115/hack/modules-arm64.txt" \
+     "${CHECKOUTS}/rpi5-modules-arm64.txt"
+fi
 
-# Apply original patch to v1.11.5 talos to extract the RPi5 module list
-git clone --depth 1 --branch v1.11.5 https://github.com/siderolabs/talos.git "${WORK_DIR}/talos-v1115"
-git -C "${WORK_DIR}/talos-v1115" -c user.email="bot@build" -c user.name="bot" \
-  am "${WORK_DIR}/talos-rpi5-builder/patches/siderolabs/talos/0001-Patched-for-Raspberry-Pi-5.patch"
-RPI5_MODULES="${WORK_DIR}/talos-v1115/hack/modules-arm64.txt"
+# ── 4. Patch pkgs at PKG_VERSION ──────────────────────────────────────────────
+if [ ! -d "${CHECKOUTS}/pkgs" ]; then
+  echo "==> Patching siderolabs/pkgs:${PKG_VERSION} for RPi kernel..."
+  git clone --depth 1 --branch "${PKG_VERSION}" \
+    https://github.com/siderolabs/pkgs.git "${CHECKOUTS}/pkgs"
 
+  # Detect current upstream linux_version line so the sed is version-agnostic
+  UPSTREAM_VER=$(grep 'linux_version:' "${CHECKOUTS}/pkgs/Pkgfile" | head -1 | awk '{print $2}')
+  UPSTREAM_SHA256=$(grep 'linux_sha256:' "${CHECKOUTS}/pkgs/Pkgfile" | head -1 | awk '{print $2}')
+  UPSTREAM_SHA512=$(grep 'linux_sha512:' "${CHECKOUTS}/pkgs/Pkgfile" | head -1 | awk '{print $2}')
 
-# ── 2. Patch siderolabs/pkgs at TALOS_VERSION ─────────────────────────────────
-echo "==> Patching siderolabs/pkgs:${PKG_VERSION} for RPi kernel..."
-git clone --depth 1 --branch "${PKG_VERSION}" https://github.com/siderolabs/pkgs.git "${WORK_DIR}/pkgs"
+  sed -i \
+    -e "s|linux_version: ${UPSTREAM_VER}|linux_version: ${RPI_KERNEL_VERSION}|" \
+    -e "s|linux_sha256: ${UPSTREAM_SHA256}|linux_sha256: ${RPI_KERNEL_SHA256}|" \
+    -e "s|linux_sha512: ${UPSTREAM_SHA512}|linux_sha512: ${RPI_KERNEL_SHA512}|" \
+    -e "s|depName=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git|depName=https://github.com/raspberrypi/linux.git|" \
+    "${CHECKOUTS}/pkgs/Pkgfile"
 
-python3 - "${WORK_DIR}/pkgs/Pkgfile" <<PYEOF
-import sys, re
+  sed -i \
+    -e 's|url: https://cdn\.kernel\.org[^"]*|url: "https://github.com/raspberrypi/linux/archive/refs/tags/{{ .linux_version }}.tar.gz"|' \
+    -e 's|destination: linux\.tar\.xz|destination: linux.tar.gz|' \
+    -e 's|tar -xJf linux\.tar\.xz|tar -xzf linux.tar.gz|' \
+    "${CHECKOUTS}/pkgs/kernel/prepare/pkg.yaml"
 
-path = sys.argv[1]
-text = open(path).read()
+  cp "${CHECKOUTS}/rpi5-config-arm64" "${CHECKOUTS}/pkgs/kernel/build/config-arm64"
 
-# Swap upstream kernel for RPi kernel
-text = re.sub(
-    r'  # renovate: datasource=git-tags extractVersion=\^v\(\?<version>\.\*\)\$ depName=git://git\.kernel\.org[^\n]*\n'
-    r'  linux_version: [^\n]+\n'
-    r'  linux_sha256: [^\n]+\n'
-    r'  linux_sha512: [^\n]+',
-    (
-        '  # renovate: datasource=git-tags extractVersion=^v(?<version>.*)$ '
-        'depName=https://github.com/raspberrypi/linux.git\n'
-        '  linux_version: ${RPI_KERNEL_VERSION}\n'
-        '  linux_sha256: ${RPI_KERNEL_SHA256}\n'
-        '  linux_sha512: ${RPI_KERNEL_SHA512}'
-    ),
-    text
-)
+  ${GIT} -C "${CHECKOUTS}/pkgs" commit -am "rpi5: use raspberrypi/linux ${RPI_KERNEL_VERSION}"
+fi
 
-open(path, 'w').write(text)
-PYEOF
-
-# Fix kernel download URL to point at GitHub RPi archive
-python3 - "${WORK_DIR}/pkgs/kernel/prepare/pkg.yaml" <<'PYEOF'
-import sys
-
-path = sys.argv[1]
-text = open(path).read()
-text = text.replace(
-    'url: https://cdn.kernel.org/pub/linux/kernel/v{{ regexReplaceAll "(\\\\d+)(.\\\\d+)(\\\\.\\\\d+)?$" .linux_version "${1}" }}.x/linux-{{ .linux_version }}.tar.xz',
-    'url: "https://github.com/raspberrypi/linux/archive/refs/tags/{{ .linux_version }}.tar.gz"'
-)
-text = text.replace('destination: linux.tar.xz', 'destination: linux.tar.gz')
-text = text.replace('tar -xJf linux.tar.xz', 'tar -xzf linux.tar.gz')
-open(path, 'w').write(text)
-PYEOF
-
-# Install the RPi5-compatible kernel config (from 6.12.25 RPi kernel)
-cp "${RPI5_CONFIG}" "${WORK_DIR}/pkgs/kernel/build/config-arm64"
-
-git -C "${WORK_DIR}/pkgs" -c user.email="bot@build" -c user.name="bot" \
-  commit -am "rpi5: use raspberrypi/linux ${RPI_KERNEL_VERSION}"
-
-
-# ── 3. Build RPi5 kernel ───────────────────────────────────────────────────────
-echo "==> Building RPi5 kernel (this takes ~30 min on ARM64)..."
-make -C "${WORK_DIR}/pkgs" \
+# ── 5. Build RPi5 kernel ───────────────────────────────────────────────────────
+echo "==> Building RPi5 kernel (~30 min)..."
+make -C "${CHECKOUTS}/pkgs" \
   REGISTRY="${REGISTRY}" USERNAME="${USERNAME}" PUSH="${PUSH}" \
   PLATFORM=linux/arm64 \
   kernel
 
-# Determine the pkgs image tag (git describe of the patched checkout)
-PKGS_TAG=$(git -C "${WORK_DIR}/pkgs" describe --tags --always --dirty --match 'v[0-9]*')
-echo "==> Kernel built as ${REGISTRY}/${USERNAME}/kernel:${PKGS_TAG}"
+PKGS_TAG=$(git -C "${CHECKOUTS}/pkgs" describe --tags --always --dirty --match 'v[0-9]*')
+echo "==> Kernel: ${REGISTRY}/${USERNAME}/kernel:${PKGS_TAG}"
 
+# ── 6. Patch talos at TALOS_VERSION ───────────────────────────────────────────
+if [ ! -d "${CHECKOUTS}/talos" ]; then
+  echo "==> Patching siderolabs/talos:${TALOS_VERSION} for RPi5 modules..."
+  git clone --depth 1 --branch "${TALOS_VERSION}" \
+    https://github.com/siderolabs/talos.git "${CHECKOUTS}/talos"
+  cp "${CHECKOUTS}/rpi5-modules-arm64.txt" "${CHECKOUTS}/talos/hack/modules-arm64.txt"
+  ${GIT} -C "${CHECKOUTS}/talos" commit -am "rpi5: modules-arm64.txt for ${RPI_KERNEL_VERSION}"
+fi
 
-# ── 4. Patch siderolabs/talos at TALOS_VERSION ────────────────────────────────
-echo "==> Patching siderolabs/talos:${TALOS_VERSION} for RPi5 modules..."
-git clone --depth 1 --branch "${TALOS_VERSION}" https://github.com/siderolabs/talos.git "${WORK_DIR}/talos"
-cp "${RPI5_MODULES}" "${WORK_DIR}/talos/hack/modules-arm64.txt"
-git -C "${WORK_DIR}/talos" -c user.email="bot@build" -c user.name="bot" \
-  commit -am "rpi5: update modules-arm64.txt for RPi kernel"
+TALOS_TAG=$(git -C "${CHECKOUTS}/talos" describe --tags --always --dirty --match 'v[0-9]*')
 
-
-# ── 5. Build installer + metal image ──────────────────────────────────────────
-echo "==> Building Talos installer and metal image..."
-make -C "${WORK_DIR}/talos" \
+# ── 7. Build installer ─────────────────────────────────────────────────────────
+echo "==> Building Talos installer..."
+make -C "${CHECKOUTS}/talos" \
   REGISTRY="${REGISTRY}" USERNAME="${USERNAME}" PUSH="${PUSH}" \
   PKG_KERNEL="${REGISTRY}/${USERNAME}/kernel:${PKGS_TAG}" \
   INSTALLER_ARCH=arm64 PLATFORM=linux/arm64 \
   IMAGER_ARGS="--overlay-name=${OVERLAY_NAME} --overlay-image=${OVERLAY_IMAGE}" \
   kernel initramfs imager installer-base installer
 
-# Tag the installer with the clean TALOS_VERSION
+# Re-tag with the clean TALOS_VERSION for easy reference
 if [ "${PUSH}" = "true" ]; then
-  docker pull "${REGISTRY}/${USERNAME}/installer:$(git -C "${WORK_DIR}/talos" describe --tags --always --dirty --match 'v[0-9]*')"
-  docker tag "${REGISTRY}/${USERNAME}/installer:$(git -C "${WORK_DIR}/talos" describe --tags --always --dirty --match 'v[0-9]*')" "${INSTALLER_IMAGE}"
+  INSTALLER_IMAGE="${REGISTRY}/${USERNAME}/installer:${TALOS_VERSION}"
+  docker pull "${REGISTRY}/${USERNAME}/installer:${TALOS_TAG}"
+  docker tag  "${REGISTRY}/${USERNAME}/installer:${TALOS_TAG}" "${INSTALLER_IMAGE}"
   docker push "${INSTALLER_IMAGE}"
+  echo "==> Pushed: ${INSTALLER_IMAGE}"
 fi
 
-# Build metal raw image
+# ── 8. Build metal disk image ──────────────────────────────────────────────────
+echo "==> Building metal disk image..."
 docker run --rm -t \
   -v "${OUT_DIR}:/out" \
   -v /dev:/dev --privileged \
-  "${REGISTRY}/${USERNAME}/imager:$(git -C "${WORK_DIR}/talos" describe --tags --always --dirty --match 'v[0-9]*')" \
+  "${REGISTRY}/${USERNAME}/imager:${TALOS_TAG}" \
   metal --arch arm64 \
-  --base-installer-image="${INSTALLER_IMAGE}" \
+  --base-installer-image="${REGISTRY}/${USERNAME}/installer:${TALOS_VERSION}" \
   --overlay-name="${OVERLAY_NAME}" \
   --overlay-image="${OVERLAY_IMAGE}"
 
 echo ""
 echo "==> Done!"
-echo "    Installer: ${INSTALLER_IMAGE}"
+echo "    Installer: ${REGISTRY}/${USERNAME}/installer:${TALOS_VERSION}"
 echo "    Disk image: ${OUT_DIR}/metal-arm64.raw.zst"
