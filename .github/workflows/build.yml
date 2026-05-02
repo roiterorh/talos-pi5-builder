@@ -91,9 +91,9 @@ jobs:
           PKG_VERSION: ${{ steps.ver.outputs.pkg }}
         run: |
           # Detect current upstream linux_version to build the replacement block
-          UPSTREAM_VER=$(grep 'linux_version:' pkgs/Pkgfile | head -1 | awk '{print $2}')
-          UPSTREAM_SHA256=$(grep 'linux_sha256:' pkgs/Pkgfile | head -1 | awk '{print $2}')
-          UPSTREAM_SHA512=$(grep 'linux_sha512:' pkgs/Pkgfile | head -1 | awk '{print $2}')
+          export UPSTREAM_VER=$(grep 'linux_version:' pkgs/Pkgfile | head -1 | awk '{print $2}')
+          export UPSTREAM_SHA256=$(grep 'linux_sha256:' pkgs/Pkgfile | head -1 | awk '{print $2}')
+          export UPSTREAM_SHA512=$(grep 'linux_sha512:' pkgs/Pkgfile | head -1 | awk '{print $2}')
 
           python3 - << PYEOF
           import re, os
