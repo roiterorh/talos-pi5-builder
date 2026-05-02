@@ -92,8 +92,10 @@ if [ ! -d "${CHECKOUTS}/pkgs" ]; then
     -e "s|depName=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git|depName=https://github.com/raspberrypi/linux.git|" \
     "${CHECKOUTS}/pkgs/Pkgfile"
 
+  # Note: use .* not [^"]* — the CDN URL contains quotes inside template
+  # expressions like regexReplaceAll "(\d+)" which would truncate [^"]*
   sed -i \
-    -e 's|url: https://cdn\.kernel\.org[^"]*|url: "https://github.com/raspberrypi/linux/archive/refs/tags/{{ .linux_version }}.tar.gz"|' \
+    -e 's|url: https://cdn\.kernel\.org.*|url: "https://github.com/raspberrypi/linux/archive/refs/tags/{{ .linux_version }}.tar.gz"|' \
     -e 's|destination: linux\.tar\.xz|destination: linux.tar.gz|' \
     -e 's|tar -xJf linux\.tar\.xz|tar -xzf linux.tar.gz|' \
     "${CHECKOUTS}/pkgs/kernel/prepare/pkg.yaml"
