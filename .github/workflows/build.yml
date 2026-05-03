@@ -53,7 +53,7 @@ jobs:
           echo "pkg=${PKG}" >> "$GITHUB_OUTPUT"
           # Deterministic cache tags — stable across re-runs with the same inputs
           echo "kernel_tag=rpi5-${PKG}-k${{ env.RPI_KERNEL_VERSION }}" >> "$GITHUB_OUTPUT"
-          echo "installer_tag=rpi5-${TALOS}-k${{ env.RPI_KERNEL_VERSION }}" >> "$GITHUB_OUTPUT"
+          echo "installer_tag=rpi5-${TALOS}-k${{ env.RPI_KERNEL_VERSION }}-sbc2" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
