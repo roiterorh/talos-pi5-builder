@@ -273,12 +273,14 @@ jobs:
               https://github.com/u-boot/u-boot.git /tmp/u-boot-src
             # rpi_5_defconfig does not exist; rpi_arm64_defconfig covers BCM2712 via
             # runtime detection in board/raspberrypi/rpi/rpi.c.
-            # Disable PREBOOT ("pci enum; usb start;") — BCM2712 has no PCIe driver in
-            # U-Boot so pci enum hangs, producing the blank screen. MMC is native on
-            # BCM2712 and works without PCIe, so distroboot still finds the SD card.
+            # BCM2712 has no PCIe driver in U-Boot, so any attempt to init PCIe/USB
+            # hangs — both PREBOOT ("pci enum; usb start;") and distroboot's USB scan.
+            # Disable PREBOOT and restrict BOOT_TARGETS to MMC only so neither path
+            # touches PCIe. MMC is native on BCM2712 and works without PCIe.
             make -C /tmp/u-boot-src rpi_arm64_defconfig
             /tmp/u-boot-src/scripts/config --file /tmp/u-boot-src/.config \
-              --disable CONFIG_USE_PREBOOT
+              --disable CONFIG_USE_PREBOOT \
+              --set-str CONFIG_BOOT_TARGETS "mmc0 mmc1"
             make -C /tmp/u-boot-src olddefconfig
             make -C /tmp/u-boot-src -j$(nproc)
             mkdir -p /tmp/u-boot-rpi5
