@@ -276,7 +276,7 @@ jobs:
             # U-Boot so pci enum hangs, producing the blank screen. MMC is native on
             # BCM2712 and works without PCIe, so distroboot still finds the SD card.
             make -C /tmp/u-boot-src rpi_arm64_defconfig
-            ./scripts/config --file /tmp/u-boot-src/.config \
+            /tmp/u-boot-src/scripts/config --file /tmp/u-boot-src/.config \
               --disable CONFIG_USE_PREBOOT
             make -C /tmp/u-boot-src olddefconfig
             make -C /tmp/u-boot-src -j$(nproc)
