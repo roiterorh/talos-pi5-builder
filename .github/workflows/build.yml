@@ -27,6 +27,7 @@ env:
   RPI_KERNEL_SHA256: c95906cfbc7808de5860c6d86537bea22e3501f600a5209de59a86cb436886f6
   RPI_KERNEL_SHA512: 0ed5d490c491e590b5980dccf6fcac0dd3c47accbfacd40d91507c12801cff34fa6a1c68991c8a6c57bb259c909121414766f35a0b11c4bd5d62c3e11d710839
   UBOOT_VERSION: v2025.04-rpi5-3
+  RPI_FW_VERSION: "1.20250430"
 
 jobs:
   build:
@@ -288,18 +289,24 @@ jobs:
             zstd -d metal-arm64.raw.zst && rm metal-arm64.raw.zst
           fi
 
-          docker create --name rpi-overlay --entrypoint /bin/sh ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
-          mkdir -p /tmp/rpi-overlay
-          docker export rpi-overlay | tar x -C /tmp/rpi-overlay
-          docker rm rpi-overlay
+          # Pull DTBs and overlays from the RPi firmware package that matches
+          # our kernel source (stable_20250428 / 6.12.25). This is the same
+          # version used by talos-rpi5/sbc-raspberrypi5 and ensures bcm2712d0-rpi-5-b.dtb
+          # (D0 stepping) is present — without it RP1 PCIe never initialises.
+          git clone --depth 1 --branch ${{ env.RPI_FW_VERSION }} \
+            --filter=blob:limit:1m --sparse \
+            https://github.com/raspberrypi/firmware.git /tmp/rpi-firmware
+          git -C /tmp/rpi-firmware sparse-checkout set boot
+          git -C /tmp/rpi-firmware checkout
 
           LOOP=$(sudo losetup -f --show -P metal-arm64.raw)
           sudo mkdir -p /mnt/efi
           sudo mount "${LOOP}p1" /mnt/efi
 
           sudo cp /tmp/u-boot-rpi5/u-boot.bin /mnt/efi/
-          sudo cp /tmp/rpi-overlay/artifacts/rpi_5/bcm2712*.dtb /mnt/efi/
-          sudo cp -r /tmp/rpi-overlay/artifacts/rpi_5/overlays /mnt/efi/
+          sudo cp /tmp/rpi-firmware/boot/bcm2712*.dtb /mnt/efi/
+          sudo mkdir -p /mnt/efi/overlays
+          sudo cp /tmp/rpi-firmware/boot/overlays/*.dtbo /mnt/efi/overlays/
           printf 'gpu_mem=32\nkernel=u-boot.bin\narm_64bit=1\narm_boost=1\nenable_uart=1\n' \
             | sudo tee /mnt/efi/config.txt
 
