@@ -52,8 +52,8 @@ jobs:
           PKG="${TALOS%.*}.0"
           echo "pkg=${PKG}" >> "$GITHUB_OUTPUT"
           # Deterministic cache tags — stable across re-runs with the same inputs
-          echo "kernel_tag=rpi5-${PKG}-k${{ env.RPI_KERNEL_VERSION }}" >> "$GITHUB_OUTPUT"
-          echo "installer_tag=rpi5-${TALOS}-k${{ env.RPI_KERNEL_VERSION }}-sbc2" >> "$GITHUB_OUTPUT"
+          echo "kernel_tag=rpi5-${PKG}-k${{ env.RPI_KERNEL_VERSION }}-4k" >> "$GITHUB_OUTPUT"
+          echo "installer_tag=rpi5-${TALOS}-k${{ env.RPI_KERNEL_VERSION }}-4k" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -171,6 +171,15 @@ jobs:
 
           cp rpi5-config-arm64 pkgs/kernel/build/config-arm64
 
+          # RPi5 vendor kernel uses 16K pages; Talos requires 4K pages.
+          python3 - << 'PYEOF'
+          path = 'pkgs/kernel/build/config-arm64'
+          text = open(path).read()
+          text = text.replace('CONFIG_ARM64_16K_PAGES=y', '# CONFIG_ARM64_16K_PAGES is not set')
+          text = text.replace('# CONFIG_ARM64_4K_PAGES is not set', 'CONFIG_ARM64_4K_PAGES=y')
+          open(path, 'w').write(text)
+          PYEOF
+
           python3 - << 'PYEOF'
           path = 'pkgs/kernel/build/scripts/filter-hardened-check.py'
           text = open(path).read()
@@ -235,6 +244,19 @@ jobs:
             "${{ env.REGISTRY }}/${{ env.USERNAME }}/imager:${{ env.TALOS_GIT_TAG }}" \
             "${{ steps.ver.outputs.installer_tag }}"
           echo "TALOS_TAG=${{ steps.ver.outputs.installer_tag }}" >> "$GITHUB_ENV"
+
+      - name: Verify installer contains RPi5 kernel
+        if: steps.installer_cache.outputs.hit != 'true'
+        run: |
+          id=$(docker create "${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ env.TALOS_GIT_TAG }}" true)
+          docker cp "$id:/usr/install/arm64/vmlinuz" /tmp/installer-vmlinuz
+          docker rm "$id"
+          KVER=$(strings /tmp/installer-vmlinuz | grep -m1 "Linux version" | awk '{print $3}')
+          echo "Installer kernel: $KVER"
+          if [[ "$KVER" != *"6.12."* ]]; then
+            echo "::error::Expected 6.12.x-talos kernel, got '$KVER'. PKG_KERNEL override failed."
+            exit 1
+          fi
 
       - name: Tag installer as ${{ steps.ver.outputs.talos }}
         run: |
