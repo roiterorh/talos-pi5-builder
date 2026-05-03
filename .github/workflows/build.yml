@@ -26,7 +26,7 @@ env:
   RPI_KERNEL_VERSION: stable_20250428
   RPI_KERNEL_SHA256: c95906cfbc7808de5860c6d86537bea22e3501f600a5209de59a86cb436886f6
   RPI_KERNEL_SHA512: 0ed5d490c491e590b5980dccf6fcac0dd3c47accbfacd40d91507c12801cff34fa6a1c68991c8a6c57bb259c909121414766f35a0b11c4bd5d62c3e11d710839
-  UBOOT_VERSION: v2025.10
+  UBOOT_VERSION: v2025.04-rpi5-3
 
 jobs:
   build:
@@ -259,7 +259,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/u-boot-rpi5
-          key: uboot-rpi5-${{ env.UBOOT_VERSION }}-mmc-only-v1
+          key: uboot-rpi5-${{ env.UBOOT_VERSION }}
 
       - name: Build U-Boot for RPi5 (rpi_5 / BCM2712)
         run: |
@@ -267,22 +267,11 @@ jobs:
             echo "==> U-Boot cache hit, skipping build"
           else
             sudo apt-get install -y -q make gcc bc bison flex libssl-dev \
-              device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools \
-              libgnutls28-dev
+              device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools
             git clone --depth 1 --branch ${{ env.UBOOT_VERSION }} \
-              https://github.com/u-boot/u-boot.git /tmp/u-boot-src
-            # rpi_5_defconfig does not exist; rpi_arm64_defconfig covers BCM2712 via
-            # runtime detection in board/raspberrypi/rpi/rpi.c.
-            # BCM2712 has no PCIe driver in U-Boot, so any attempt to init PCIe/USB
-            # hangs — both PREBOOT ("pci enum; usb start;") and distroboot's USB scan.
-            # Disable PREBOOT and restrict BOOT_TARGETS to MMC only so neither path
-            # touches PCIe. MMC is native on BCM2712 and works without PCIe.
-            make -C /tmp/u-boot-src rpi_arm64_defconfig
-            /tmp/u-boot-src/scripts/config --file /tmp/u-boot-src/.config \
-              --disable CONFIG_USE_PREBOOT \
-              --set-str CONFIG_BOOT_TARGETS "mmc0 mmc1"
-            make -C /tmp/u-boot-src olddefconfig
-            make -C /tmp/u-boot-src -j$(nproc)
+              https://github.com/talos-rpi5/u-boot.git /tmp/u-boot-src
+            make -C /tmp/u-boot-src rpi_5_defconfig
+            make -C /tmp/u-boot-src -j$(nproc) HOSTLDLIBS_mkimage="-lssl -lcrypto" u-boot.bin
             mkdir -p /tmp/u-boot-rpi5
             cp /tmp/u-boot-src/u-boot.bin /tmp/u-boot-rpi5/
           fi
@@ -309,7 +298,7 @@ jobs:
           sudo cp /tmp/u-boot-rpi5/u-boot.bin /mnt/efi/
           sudo cp /tmp/rpi-overlay/artifacts/rpi_5/bcm2712*.dtb /mnt/efi/
           sudo cp -r /tmp/rpi-overlay/artifacts/rpi_5/overlays /mnt/efi/
-          printf 'arm_64bit=1\nenable_uart=1\nuart_2ndstage=1\nkernel=u-boot.bin\n[pi5]\narm_boost=1\ndtoverlay=bcm2712d0\n' \
+          printf 'gpu_mem=32\nhdmi_safe:0=1\nhdmi_safe:1=1\nkernel=u-boot.bin\narm_64bit=1\narm_boost=1\nenable_uart=1\ndtoverlay=disable-bt\ndtoverlay=disable-wifi\n' \
             | sudo tee /mnt/efi/config.txt
 
           echo "==> Boot partition contents after injection:"
