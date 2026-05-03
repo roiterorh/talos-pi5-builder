@@ -245,14 +245,14 @@ jobs:
             "${{ steps.ver.outputs.installer_tag }}"
           echo "TALOS_TAG=${{ steps.ver.outputs.installer_tag }}" >> "$GITHUB_ENV"
 
-      - name: Verify installer contains RPi5 kernel
+      - name: Verify imager contains RPi5 kernel
         if: steps.installer_cache.outputs.hit != 'true'
         run: |
-          id=$(docker create "${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ env.TALOS_GIT_TAG }}" true)
-          docker cp "$id:/usr/install/arm64/vmlinuz" /tmp/installer-vmlinuz
+          id=$(docker create "${{ env.REGISTRY }}/${{ env.USERNAME }}/imager:${{ env.TALOS_GIT_TAG }}" true)
+          docker cp "$id:/usr/install/arm64/vmlinuz" /tmp/imager-vmlinuz
           docker rm "$id"
-          KVER=$(strings /tmp/installer-vmlinuz | grep -m1 "Linux version" | awk '{print $3}')
-          echo "Installer kernel: $KVER"
+          KVER=$(strings /tmp/imager-vmlinuz | grep -m1 "Linux version" | awk '{print $3}')
+          echo "Imager kernel: $KVER"
           if [[ "$KVER" != *"6.12."* ]]; then
             echo "::error::Expected 6.12.x-talos kernel, got '$KVER'. PKG_KERNEL override failed."
             exit 1
