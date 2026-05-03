@@ -270,7 +270,15 @@ jobs:
               device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools
             git clone --depth 1 --branch ${{ env.UBOOT_VERSION }} \
               https://github.com/u-boot/u-boot.git /tmp/u-boot-src
-            make -C /tmp/u-boot-src rpi_5_defconfig
+            # rpi_5_defconfig does not exist; rpi_arm64_defconfig covers BCM2712 via
+            # runtime detection in board/raspberrypi/rpi/rpi.c.
+            # Disable PREBOOT ("pci enum; usb start;") — BCM2712 has no PCIe driver in
+            # U-Boot so pci enum hangs, producing the blank screen. MMC is native on
+            # BCM2712 and works without PCIe, so distroboot still finds the SD card.
+            make -C /tmp/u-boot-src rpi_arm64_defconfig
+            ./scripts/config --file /tmp/u-boot-src/.config \
+              --disable CONFIG_USE_PREBOOT
+            make -C /tmp/u-boot-src olddefconfig
             make -C /tmp/u-boot-src -j$(nproc)
             mkdir -p /tmp/u-boot-rpi5
             cp /tmp/u-boot-src/u-boot.bin /tmp/u-boot-rpi5/
