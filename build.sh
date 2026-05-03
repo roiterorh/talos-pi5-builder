@@ -174,33 +174,34 @@ docker run --rm -t \
   --overlay-name="${OVERLAY_NAME}" \
   --overlay-image="${OVERLAY_IMAGE}"
 
-# ── 9. Inject RPi5 UEFI firmware into metal image boot partition ──────────────
-echo "==> Injecting RPi5 UEFI firmware..."
+# ── 9. Build U-Boot rpi_5 from source ────────────────────────────────────────
+UBOOT_BIN="${CHECKOUTS}/u-boot-rpi5/u-boot.bin"
+if [ ! -f "${UBOOT_BIN}" ]; then
+  echo "==> Building U-Boot rpi_5 (BCM2712)..."
+  mkdir -p "${CHECKOUTS}/u-boot-rpi5"
+  git clone --depth 1 --branch v2025.10 \
+    https://github.com/u-boot/u-boot.git "${CHECKOUTS}/u-boot-rpi5/src"
+  make -C "${CHECKOUTS}/u-boot-rpi5/src" rpi_5_defconfig
+  make -C "${CHECKOUTS}/u-boot-rpi5/src" -j"$(nproc)"
+  cp "${CHECKOUTS}/u-boot-rpi5/src/u-boot.bin" "${UBOOT_BIN}"
+fi
+
+# ── 10. Inject U-Boot into metal image boot partition ─────────────────────────
+echo "==> Injecting U-Boot rpi_5 into boot partition..."
 
 # Decompress if imager compressed it
 if [ -f "${OUT_DIR}/metal-arm64.raw.zst" ] && [ ! -f "${OUT_DIR}/metal-arm64.raw" ]; then
   zstd -d "${OUT_DIR}/metal-arm64.raw.zst" && rm "${OUT_DIR}/metal-arm64.raw.zst"
 fi
 
-# Download worproject/rpi5-uefi (BCM2712-aware UEFI, replaces rpi_arm64 U-Boot)
-UEFI_ZIP="${CHECKOUTS}/RPi5_UEFI_Release_v0.3.zip"
-if [ ! -f "${UEFI_ZIP}" ]; then
-  curl -sLo "${UEFI_ZIP}" \
-    "https://github.com/worproject/rpi5-uefi/releases/download/v0.3/RPi5_UEFI_Release_v0.3.zip"
-fi
-mkdir -p "${CHECKOUTS}/rpi5-uefi"
-unzip -qo "${UEFI_ZIP}" -d "${CHECKOUTS}/rpi5-uefi"
-
 LOOP=$(sudo losetup -f --show -P "${OUT_DIR}/metal-arm64.raw")
 sudo mkdir -p /mnt/efi
 sudo mount "${LOOP}p1" /mnt/efi
 
-sudo cp "${CHECKOUTS}/rpi5-uefi/RPI_EFI.fd" /mnt/efi/
-# UEFI firmware's own BCM2712 DTB (used by the firmware during hardware init)
-sudo cp "${CHECKOUTS}/rpi5-uefi/bcm2712-rpi-5-b.dtb" /mnt/efi/
-# sbc-raspberrypi DTBs already on the partition from the imager; no need to re-copy
+sudo cp "${UBOOT_BIN}" /mnt/efi/u-boot.bin
+# sbc-raspberrypi DTBs already on the partition from the imager
 
-printf 'armstub=RPI_EFI.fd\ndevice_tree_address=0x1f0000\ndevice_tree_end=0x210000\nenable_uart=1\ndisable_overscan=1\n' \
+printf 'arm_64bit=1\nenable_uart=1\nuart_2ndstage=1\nkernel=u-boot.bin\n[pi5]\narm_boost=1\ndtoverlay=bcm2712d0\n' \
   | sudo tee /mnt/efi/config.txt
 
 echo "==> Boot partition contents:"
