@@ -247,6 +247,14 @@ jobs:
           printf 'arm_64bit=1\nenable_uart=1\nuart_2ndstage=1\nkernel=u-boot.bin\n[pi5]\narm_boost=1\ndtoverlay=bcm2712d0\n' \
             | sudo tee /mnt/efi/config.txt
 
+          # boot.scr: explicit U-Boot script so distroboot doesn't hang scanning
+          # without this, U-Boot shows logo then goes black waiting for DHCP/scan
+          apt-get install -y -q u-boot-tools 2>/dev/null || true
+          printf 'setenv autoload no\nfatload mmc 0:1 ${kernel_addr_r} EFI/BOOT/BOOTAA64.efi\nbootefi ${kernel_addr_r} ${fdtcontroladdr}\n' \
+            > /tmp/boot.cmd
+          mkimage -A arm64 -T script -C none -n "Talos boot" -d /tmp/boot.cmd /tmp/boot.scr
+          sudo cp /tmp/boot.scr /mnt/efi/boot.scr
+
           echo "==> Boot partition contents after injection:"
           ls /mnt/efi/
 
