@@ -220,12 +220,16 @@ jobs:
             zstd -d metal-arm64.raw.zst && rm metal-arm64.raw.zst
           fi
 
-          # Get U-Boot for RPi ARM64 (covers RPi5) from Ubuntu package
-          curl -sLO "http://ports.ubuntu.com/pool/main/u/u-boot/u-boot-rpi_2025.10-0ubuntu2_arm64.deb"
-          ar x u-boot-rpi_2025.10-0ubuntu2_arm64.deb
-          mkdir -p /tmp/uboot && zstd -d data.tar.zst -c | tar x -C /tmp/uboot
+          # WHY worproject/rpi5-uefi instead of U-Boot rpi_arm64:
+          # Ubuntu u-boot-rpi only ships rpi_3/rpi_4/rpi_arm64 targets — none support BCM2712.
+          # rpi_arm64 crashes silently on RPi5 (black screen after logo).
+          # worproject/rpi5-uefi is a full BCM2712-aware EDK2 UEFI firmware; it initialises
+          # the RP1 southbridge at EL3 and then natively loads EFI/BOOT/BOOTAA64.efi.
+          curl -sLO "https://github.com/worproject/rpi5-uefi/releases/download/v0.3/RPi5_UEFI_Release_v0.3.zip"
+          mkdir -p /tmp/rpi5-uefi
+          unzip -q RPi5_UEFI_Release_v0.3.zip -d /tmp/rpi5-uefi
 
-          # Extract RPi5 DTBs from the overlay image
+          # Extract RPi5 DTBs from the overlay image (kernel-matching DTBs for RPi 6.12.25)
           docker create --name rpi-overlay --entrypoint /bin/sh ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
           mkdir -p /tmp/rpi-overlay
           docker export rpi-overlay | tar x -C /tmp/rpi-overlay
@@ -236,24 +240,19 @@ jobs:
           sudo mkdir -p /mnt/efi
           sudo mount "${LOOP}p1" /mnt/efi
 
-          # U-Boot: RPi5 EEPROM loads this as 'kernel', then U-Boot provides UEFI
-          sudo cp /tmp/uboot/usr/lib/u-boot/rpi_arm64/u-boot.bin /mnt/efi/
+          # UEFI firmware: BCM2712-aware, armstub loads at EL3 before the OS
+          sudo cp /tmp/rpi5-uefi/RPI_EFI.fd /mnt/efi/
 
-          # RPi5 DTBs (from sbc-raspberrypi overlay)
+          # DTB for UEFI firmware's own hardware init (loaded at device_tree_address by EEPROM)
+          sudo cp /tmp/rpi5-uefi/bcm2712-rpi-5-b.dtb /mnt/efi/
+
+          # Additional RPi5 DTBs and overlays from sbc-raspberrypi (RPi 6.12.25, match our kernel)
           sudo cp /tmp/rpi-overlay/artifacts/rpi_5/bcm2712*.dtb /mnt/efi/
           sudo cp -r /tmp/rpi-overlay/artifacts/rpi_5/overlays /mnt/efi/
 
-          # config.txt: RPi5 EEPROM loads U-Boot, U-Boot provides UEFI for EFI/BOOT/BOOTAA64.efi
-          printf 'arm_64bit=1\nenable_uart=1\nuart_2ndstage=1\nkernel=u-boot.bin\n[pi5]\narm_boost=1\ndtoverlay=bcm2712d0\n' \
+          # config.txt: EEPROM loads RPI_EFI.fd as armstub → UEFI → EFI/BOOT/BOOTAA64.efi → Talos
+          printf 'armstub=RPI_EFI.fd\ndevice_tree_address=0x1f0000\ndevice_tree_end=0x210000\nenable_uart=1\ndisable_overscan=1\n' \
             | sudo tee /mnt/efi/config.txt
-
-          # boot.scr: explicit U-Boot script so distroboot doesn't hang scanning
-          # without this, U-Boot shows logo then goes black waiting for DHCP/scan
-          apt-get install -y -q u-boot-tools 2>/dev/null || true
-          printf 'setenv autoload no\nfatload mmc 0:1 ${kernel_addr_r} EFI/BOOT/BOOTAA64.efi\nbootefi ${kernel_addr_r} ${fdtcontroladdr}\n' \
-            > /tmp/boot.cmd
-          mkimage -A arm64 -T script -C none -n "Talos boot" -d /tmp/boot.cmd /tmp/boot.scr
-          sudo cp /tmp/boot.scr /mnt/efi/boot.scr
 
           echo "==> Boot partition contents after injection:"
           ls /mnt/efi/

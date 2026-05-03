@@ -174,6 +174,43 @@ docker run --rm -t \
   --overlay-name="${OVERLAY_NAME}" \
   --overlay-image="${OVERLAY_IMAGE}"
 
+# ── 9. Inject RPi5 UEFI firmware into metal image boot partition ──────────────
+echo "==> Injecting RPi5 UEFI firmware..."
+
+# Decompress if imager compressed it
+if [ -f "${OUT_DIR}/metal-arm64.raw.zst" ] && [ ! -f "${OUT_DIR}/metal-arm64.raw" ]; then
+  zstd -d "${OUT_DIR}/metal-arm64.raw.zst" && rm "${OUT_DIR}/metal-arm64.raw.zst"
+fi
+
+# Download worproject/rpi5-uefi (BCM2712-aware UEFI, replaces rpi_arm64 U-Boot)
+UEFI_ZIP="${CHECKOUTS}/RPi5_UEFI_Release_v0.3.zip"
+if [ ! -f "${UEFI_ZIP}" ]; then
+  curl -sLo "${UEFI_ZIP}" \
+    "https://github.com/worproject/rpi5-uefi/releases/download/v0.3/RPi5_UEFI_Release_v0.3.zip"
+fi
+mkdir -p "${CHECKOUTS}/rpi5-uefi"
+unzip -qo "${UEFI_ZIP}" -d "${CHECKOUTS}/rpi5-uefi"
+
+LOOP=$(sudo losetup -f --show -P "${OUT_DIR}/metal-arm64.raw")
+sudo mkdir -p /mnt/efi
+sudo mount "${LOOP}p1" /mnt/efi
+
+sudo cp "${CHECKOUTS}/rpi5-uefi/RPI_EFI.fd" /mnt/efi/
+# UEFI firmware's own BCM2712 DTB (used by the firmware during hardware init)
+sudo cp "${CHECKOUTS}/rpi5-uefi/bcm2712-rpi-5-b.dtb" /mnt/efi/
+# sbc-raspberrypi DTBs already on the partition from the imager; no need to re-copy
+
+printf 'armstub=RPI_EFI.fd\ndevice_tree_address=0x1f0000\ndevice_tree_end=0x210000\nenable_uart=1\ndisable_overscan=1\n' \
+  | sudo tee /mnt/efi/config.txt
+
+echo "==> Boot partition contents:"
+ls /mnt/efi/
+
+sudo umount /mnt/efi
+sudo losetup -d "${LOOP}"
+
+[ -f "${OUT_DIR}/metal-arm64.raw.zst" ] || zstd --rm "${OUT_DIR}/metal-arm64.raw" -o "${OUT_DIR}/metal-arm64.raw.zst"
+
 echo ""
 echo "==> Done!"
 echo "    Installer: ${REGISTRY}/${USERNAME}/installer:${TALOS_VERSION}"

@@ -1,0 +1,6 @@
+checkouts/
+_out/
+*.raw
+*.raw.zst
+*.deb
+*.zip
