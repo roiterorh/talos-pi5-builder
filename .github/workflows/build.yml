@@ -211,6 +211,47 @@ jobs:
             --overlay-name=rpi_5 \
             --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
 
+      - name: Inject RPi5 firmware into metal image boot partition
+        run: |
+          cd _out
+
+          # Decompress if imager already compressed it
+          if [ -f metal-arm64.raw.zst ] && [ ! -f metal-arm64.raw ]; then
+            zstd -d metal-arm64.raw.zst && rm metal-arm64.raw.zst
+          fi
+
+          # Extract RPi firmware from the overlay image
+          docker create --name rpi-overlay --entrypoint /bin/sh ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
+          mkdir -p /tmp/rpi-overlay
+          docker export rpi-overlay | tar x -C /tmp/rpi-overlay
+          docker rm rpi-overlay
+
+          # Mount EFI partition (partition 1) via loop device
+          LOOP=$(sudo losetup -f --show -P metal-arm64.raw)
+          sudo mkdir -p /mnt/efi
+          sudo mount "${LOOP}p1" /mnt/efi
+
+          # RPi5 DTBs
+          sudo cp /tmp/rpi-overlay/artifacts/rpi_5/bcm2712*.dtb /mnt/efi/
+          sudo cp -r /tmp/rpi-overlay/artifacts/rpi_5/overlays /mnt/efi/
+
+          # RPi GPU firmware (needed by EEPROM before UEFI handoff)
+          sudo cp /tmp/rpi-overlay/artifacts/arm64/firmware/boot/start4.elf    /mnt/efi/
+          sudo cp /tmp/rpi-overlay/artifacts/arm64/firmware/boot/start4cd.elf  /mnt/efi/
+          sudo cp /tmp/rpi-overlay/artifacts/arm64/firmware/boot/fixup4.dat    /mnt/efi/
+          sudo cp /tmp/rpi-overlay/artifacts/arm64/firmware/boot/fixup4cd.dat  /mnt/efi/
+          sudo cp /tmp/rpi-overlay/artifacts/arm64/firmware/boot/bootcode.bin  /mnt/efi/
+
+          # config.txt: tell RPi5 firmware to chain-load the EFI bootloader
+          printf 'arm_64bit=1\nenable_uart=1\nuart_2ndstage=1\n[pi5]\ndtoverlay=bcm2712d0\n' \
+            | sudo tee /mnt/efi/config.txt
+
+          echo "==> Boot partition contents after injection:"
+          ls /mnt/efi/
+
+          sudo umount /mnt/efi
+          sudo losetup -d "${LOOP}"
+
       - name: Compress disk image
         run: |
           [ -f _out/metal-arm64.raw.zst ] || zstd --rm _out/metal-arm64.raw -o _out/metal-arm64.raw.zst
