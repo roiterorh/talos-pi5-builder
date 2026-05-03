@@ -267,7 +267,8 @@ jobs:
             echo "==> U-Boot cache hit, skipping build"
           else
             sudo apt-get install -y -q make gcc bc bison flex libssl-dev \
-              device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools
+              device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools \
+              libgnutls28-dev
             git clone --depth 1 --branch ${{ env.UBOOT_VERSION }} \
               https://github.com/talos-rpi5/u-boot.git /tmp/u-boot-src
             make -C /tmp/u-boot-src rpi_5_defconfig
