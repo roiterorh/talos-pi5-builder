@@ -272,7 +272,10 @@ jobs:
           ### Fresh install
           ```
           zstd -dc metal-arm64.raw.zst | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+          sudo sgdisk --move-second-header /dev/sdX
           ```
+          The `sgdisk` step fixes the GPT backup header (image is 2.2 GB, card is larger).
+          Talos expands the EPHEMERAL partition automatically on first boot.
 
           ### Upgrade existing node
           ```
