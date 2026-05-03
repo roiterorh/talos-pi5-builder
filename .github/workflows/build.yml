@@ -252,7 +252,8 @@ jobs:
             metal --arch arm64 \
             --base-installer-image="${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ steps.ver.outputs.talos }}" \
             --overlay-name=rpi_5 \
-            --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
+            --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0 \
+            --extra-kernel-arg="panic=-1"
 
       # ── Build U-Boot rpi_5 (cached by version pin) ────────────────────────────
       - name: Cache U-Boot rpi_5 binary
@@ -299,7 +300,7 @@ jobs:
           sudo cp /tmp/u-boot-rpi5/u-boot.bin /mnt/efi/
           sudo cp /tmp/rpi-overlay/artifacts/rpi_5/bcm2712*.dtb /mnt/efi/
           sudo cp -r /tmp/rpi-overlay/artifacts/rpi_5/overlays /mnt/efi/
-          printf 'gpu_mem=32\nhdmi_safe:0=1\nhdmi_safe:1=1\nkernel=u-boot.bin\narm_64bit=1\narm_boost=1\nenable_uart=1\ndtoverlay=disable-bt\ndtoverlay=disable-wifi\n' \
+          printf 'gpu_mem=32\nkernel=u-boot.bin\narm_64bit=1\narm_boost=1\nenable_uart=1\n' \
             | sudo tee /mnt/efi/config.txt
 
           echo "==> Boot partition contents after injection:"
