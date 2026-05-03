@@ -257,41 +257,38 @@ jobs:
           [ -f _out/metal-arm64.raw.zst ] || zstd --rm _out/metal-arm64.raw -o _out/metal-arm64.raw.zst
 
       # ── Release ───────────────────────────────────────────────────────────────
+      - name: Write release notes
+        run: |
+          cat > /tmp/release-notes.md << 'EOF'
+          > ⚠️ Experimental build, use at your own risk.
+
+          Talos Linux for Raspberry Pi 5 — custom RPi kernel build.
+
+          Uses raspberrypi/linux (6.12.25) instead of the Talos mainline kernel
+          to keep kernel and device-tree binaries in sync, which is required for
+          RP1 southbridge initialisation (Ethernet + USB on RPi5).
+
+          ### Fresh install
+          ```
+          zstd -dc metal-arm64.raw.zst | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+          ```
+
+          ### Upgrade existing node
+          ```
+          talosctl upgrade --nodes <NODE_IP> --image ghcr.io/roiterorh/installer:v1.13.0
+          ```
+          EOF
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TALOS_VERSION: ${{ steps.ver.outputs.talos }}
         run: |
           TAG="${{ steps.ver.outputs.talos }}"
-          NOTES="$(cat << 'EOF'
-> ⚠️ Experimental build, use at your own risk.
-
-Talos Linux **${{ steps.ver.outputs.talos }}** for Raspberry Pi 5 — custom RPi kernel build.
-
-Uses **raspberrypi/linux ${{ env.RPI_KERNEL_VERSION }}** (6.12.25) instead of the Talos
-mainline kernel to keep the kernel and device-tree binaries in sync, which is
-required for RP1 southbridge initialisation (Ethernet + USB on RPi5).
-
-### Fresh install
-\`\`\`bash
-zstd -dc metal-arm64.raw.zst | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
-\`\`\`
-
-### Upgrade existing node
-\`\`\`bash
-talosctl upgrade --nodes <NODE_IP> \
-  --image ghcr.io/${{ env.USERNAME }}/installer:${{ steps.ver.outputs.talos }}
-\`\`\`
-EOF
-          )"
-
-          # Create release if it doesn't exist yet; otherwise just replace the asset
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "$NOTES" \
+            --notes-file /tmp/release-notes.md \
             --prerelease \
             2>/dev/null || true
-
           gh release upload "$TAG" \
             _out/metal-arm64.raw.zst \
             --clobber
