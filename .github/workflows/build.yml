@@ -15,6 +15,10 @@ on:
         description: 'Talos version tag (e.g. v1.13.0)'
         required: true
         default: 'v1.13.0'
+      force_rebuild:
+        description: 'Ignore cached kernel/installer and rebuild from scratch'
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -71,8 +75,9 @@ jobs:
       - name: Check kernel cache
         id: kernel_cache
         run: |
+          FORCE="${{ inputs.force_rebuild }}"
           TAG="${{ env.REGISTRY }}/${{ env.USERNAME }}/kernel:${{ steps.ver.outputs.kernel_tag }}"
-          if crane manifest "${TAG}" &>/dev/null; then
+          if [ "${FORCE}" != "true" ] && crane manifest "${TAG}" &>/dev/null; then
             echo "hit=true"  >> "$GITHUB_OUTPUT"
             echo "PKGS_TAG=${{ steps.ver.outputs.kernel_tag }}" >> "$GITHUB_ENV"
           else
@@ -82,8 +87,9 @@ jobs:
       - name: Check installer cache
         id: installer_cache
         run: |
+          FORCE="${{ inputs.force_rebuild }}"
           TAG="${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ steps.ver.outputs.installer_tag }}"
-          if crane manifest "${TAG}" &>/dev/null; then
+          if [ "${FORCE}" != "true" ] && crane manifest "${TAG}" &>/dev/null; then
             echo "hit=true"  >> "$GITHUB_OUTPUT"
             echo "TALOS_TAG=${{ steps.ver.outputs.installer_tag }}" >> "$GITHUB_ENV"
           else
