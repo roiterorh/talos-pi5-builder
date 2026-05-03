@@ -259,7 +259,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/u-boot-rpi5
-          key: uboot-rpi5-${{ env.UBOOT_VERSION }}
+          key: uboot-rpi5-${{ env.UBOOT_VERSION }}-mmc-only-v1
 
       - name: Build U-Boot for RPi5 (rpi_5 / BCM2712)
         run: |
