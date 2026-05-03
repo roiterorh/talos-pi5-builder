@@ -22,6 +22,7 @@ env:
   RPI_KERNEL_VERSION: stable_20250428
   RPI_KERNEL_SHA256: c95906cfbc7808de5860c6d86537bea22e3501f600a5209de59a86cb436886f6
   RPI_KERNEL_SHA512: 0ed5d490c491e590b5980dccf6fcac0dd3c47accbfacd40d91507c12801cff34fa6a1c68991c8a6c57bb259c909121414766f35a0b11c4bd5d62c3e11d710839
+  UBOOT_VERSION: v2025.10
 
 jobs:
   build:
@@ -34,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set versions
+      - name: Set versions + cache keys
         id: ver
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -43,9 +44,11 @@ jobs:
             TALOS="${{ github.ref_name }}"
           fi
           echo "talos=${TALOS}" >> "$GITHUB_OUTPUT"
-          # PKG_VERSION: strip patch, add .0 (v1.13.0 → v1.13.0)
           PKG="${TALOS%.*}.0"
           echo "pkg=${PKG}" >> "$GITHUB_OUTPUT"
+          # Deterministic cache tags — stable across re-runs with the same inputs
+          echo "kernel_tag=rpi5-${PKG}-k${{ env.RPI_KERNEL_VERSION }}" >> "$GITHUB_OUTPUT"
+          echo "installer_tag=rpi5-${TALOS}-k${{ env.RPI_KERNEL_VERSION }}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -64,33 +67,59 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
 
-      # ── Get RPi5 kernel config + module list from talos-rpi5 v1.11.x patches ─
+      # ── Cache checks (crane manifest is fast, ~1s each) ───────────────────────
+      - name: Check kernel cache
+        id: kernel_cache
+        run: |
+          TAG="${{ env.REGISTRY }}/${{ env.USERNAME }}/kernel:${{ steps.ver.outputs.kernel_tag }}"
+          if crane manifest "${TAG}" &>/dev/null; then
+            echo "hit=true"  >> "$GITHUB_OUTPUT"
+            echo "PKGS_TAG=${{ steps.ver.outputs.kernel_tag }}" >> "$GITHUB_ENV"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check installer cache
+        id: installer_cache
+        run: |
+          TAG="${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ steps.ver.outputs.installer_tag }}"
+          if crane manifest "${TAG}" &>/dev/null; then
+            echo "hit=true"  >> "$GITHUB_OUTPUT"
+            echo "TALOS_TAG=${{ steps.ver.outputs.installer_tag }}" >> "$GITHUB_ENV"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── RPi5 patches (only needed when kernel or installer cache misses) ──────
       - name: Clone talos-rpi5 patches
+        if: steps.kernel_cache.outputs.hit != 'true' || steps.installer_cache.outputs.hit != 'true'
         run: git clone --depth 1 https://github.com/talos-rpi5/talos-builder.git talos-rpi5-builder
 
       - name: Extract RPi5 kernel config (apply patch to pkgs v1.11.0)
+        if: steps.kernel_cache.outputs.hit != 'true'
         run: |
           git clone --depth 1 --branch v1.11.0 https://github.com/siderolabs/pkgs.git pkgs-v1110
-          # Use absolute path — git -C changes git's cwd so relative paths resolve inside the repo
           git -C pkgs-v1110 am "$GITHUB_WORKSPACE/talos-rpi5-builder/patches/siderolabs/pkgs/0001-Patched-for-Raspberry-Pi-5.patch"
           cp pkgs-v1110/kernel/build/config-arm64 rpi5-config-arm64
 
       - name: Extract RPi5 module list (apply patch to talos v1.11.5)
+        if: steps.installer_cache.outputs.hit != 'true'
         run: |
           git clone --depth 1 --branch v1.11.5 https://github.com/siderolabs/talos.git talos-v1115
           git -C talos-v1115 am "$GITHUB_WORKSPACE/talos-rpi5-builder/patches/siderolabs/talos/0001-Patched-for-Raspberry-Pi-5.patch"
           cp talos-v1115/hack/modules-arm64.txt rpi5-modules-arm64.txt
 
-      # ── Patch siderolabs/pkgs at target version ───────────────────────────────
+      # ── Kernel build (skipped on cache hit, ~35 min) ──────────────────────────
       - name: Clone pkgs ${{ steps.ver.outputs.pkg }}
+        if: steps.kernel_cache.outputs.hit != 'true'
         run: git clone --depth 1 --branch ${{ steps.ver.outputs.pkg }} https://github.com/siderolabs/pkgs.git pkgs
 
       - name: Patch pkgs — switch to RPi kernel
+        if: steps.kernel_cache.outputs.hit != 'true'
         env:
           TALOS_VERSION: ${{ steps.ver.outputs.talos }}
           PKG_VERSION: ${{ steps.ver.outputs.pkg }}
         run: |
-          # Detect current upstream linux_version to build the replacement block
           export UPSTREAM_VER=$(grep 'linux_version:' pkgs/Pkgfile | head -1 | awk '{print $2}')
           export UPSTREAM_SHA256=$(grep 'linux_sha256:' pkgs/Pkgfile | head -1 | awk '{print $2}')
           export UPSTREAM_SHA512=$(grep 'linux_sha512:' pkgs/Pkgfile | head -1 | awk '{print $2}')
@@ -111,7 +140,6 @@ jobs:
               f'  linux_sha256: {os.environ["RPI_KERNEL_SHA256"]}\n'
               f'  linux_sha512: {os.environ["RPI_KERNEL_SHA512"]}'
           )
-          # Also swap the renovate datasource comment on the preceding line
           text = text.replace(
               'depName=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git',
               'depName=https://github.com/raspberrypi/linux.git'
@@ -120,7 +148,6 @@ jobs:
           open(path, 'w').write(text)
           PYEOF
 
-          # Fix kernel download URL to GitHub RPi archive (.tar.gz not .tar.xz)
           python3 - << 'PYEOF'
           path = 'pkgs/kernel/prepare/pkg.yaml'
           text = open(path).read()
@@ -135,11 +162,8 @@ jobs:
           open(path, 'w').write(text)
           PYEOF
 
-          # Install the RPi5-compatible kernel config (Linux 6.12.25 RPi)
           cp rpi5-config-arm64 pkgs/kernel/build/config-arm64
 
-          # Skip hardening checks that don't apply to the RPi vendor kernel:
-          #   CONFIG_ARM64_GCS requires Armv9.4-A; RPi5 Cortex-A76 is Armv8.2-A
           python3 - << 'PYEOF'
           path = 'pkgs/kernel/build/scripts/filter-hardened-check.py'
           text = open(path).read()
@@ -156,8 +180,8 @@ jobs:
 
           git -C pkgs commit -am "rpi5: use raspberrypi/linux ${{ env.RPI_KERNEL_VERSION }}"
 
-      # ── Build RPi5 kernel ────────────────────────────────────────────────────
       - name: Build RPi5 kernel
+        if: steps.kernel_cache.outputs.hit != 'true'
         run: |
           make -C pkgs \
             REGISTRY=${{ env.REGISTRY }} \
@@ -165,20 +189,28 @@ jobs:
             PUSH=true \
             PLATFORM=linux/arm64 \
             kernel
-          echo "PKGS_TAG=$(git -C pkgs describe --tags --always --dirty --match 'v[0-9]*')" >> "$GITHUB_ENV"
+          # Tag with deterministic cache key so future runs can skip this step
+          GIT_TAG=$(git -C pkgs describe --tags --always --dirty --match 'v[0-9]*')
+          crane tag \
+            "${{ env.REGISTRY }}/${{ env.USERNAME }}/kernel:${GIT_TAG}" \
+            "${{ steps.ver.outputs.kernel_tag }}"
+          echo "PKGS_TAG=${{ steps.ver.outputs.kernel_tag }}" >> "$GITHUB_ENV"
 
-      # ── Patch siderolabs/talos at target version ──────────────────────────────
+      # ── Installer build (skipped on cache hit, ~15 min) ───────────────────────
       - name: Clone talos ${{ steps.ver.outputs.talos }}
+        if: steps.installer_cache.outputs.hit != 'true'
         run: git clone --depth 1 --branch ${{ steps.ver.outputs.talos }} https://github.com/siderolabs/talos.git talos
 
       - name: Patch talos — RPi5 module list
+        if: steps.installer_cache.outputs.hit != 'true'
         run: |
           cp rpi5-modules-arm64.txt talos/hack/modules-arm64.txt
           git -C talos commit -am "rpi5: update modules-arm64.txt for RPi kernel ${{ env.RPI_KERNEL_VERSION }}"
-          echo "TALOS_TAG=$(git -C talos describe --tags --always --dirty --match 'v[0-9]*')" >> "$GITHUB_ENV"
+          GIT_TAG=$(git -C talos describe --tags --always --dirty --match 'v[0-9]*')
+          echo "TALOS_GIT_TAG=${GIT_TAG}" >> "$GITHUB_ENV"
 
-      # ── Build installer ───────────────────────────────────────────────────────
       - name: Build Talos installer
+        if: steps.installer_cache.outputs.hit != 'true'
         run: |
           make -C talos \
             REGISTRY=${{ env.REGISTRY }} \
@@ -188,15 +220,20 @@ jobs:
             INSTALLER_ARCH=arm64 PLATFORM=linux/arm64 \
             IMAGER_ARGS="--overlay-name=rpi_5 --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0" \
             kernel initramfs imager installer-base installer
+          # Tag installer and imager with deterministic cache key
+          crane tag \
+            "${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ env.TALOS_GIT_TAG }}" \
+            "${{ steps.ver.outputs.installer_tag }}"
+          crane tag \
+            "${{ env.REGISTRY }}/${{ env.USERNAME }}/imager:${{ env.TALOS_GIT_TAG }}" \
+            "${{ steps.ver.outputs.installer_tag }}"
+          echo "TALOS_TAG=${{ steps.ver.outputs.installer_tag }}" >> "$GITHUB_ENV"
 
-      # Re-tag with the clean version for easy reference
       - name: Tag installer as ${{ steps.ver.outputs.talos }}
         run: |
-          BUILT_TAG="${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ env.TALOS_TAG }}"
-          CLEAN_TAG="${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ steps.ver.outputs.talos }}"
-          docker pull "${BUILT_TAG}"
-          docker tag "${BUILT_TAG}" "${CLEAN_TAG}"
-          docker push "${CLEAN_TAG}"
+          crane tag \
+            "${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ env.TALOS_TAG }}" \
+            "${{ steps.ver.outputs.talos }}"
 
       # ── Build metal disk image ─────────────────────────────────────────────────
       - name: Build metal disk image
@@ -211,51 +248,50 @@ jobs:
             --overlay-name=rpi_5 \
             --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
 
-      # ── Build U-Boot for RPi5 (rpi_5 / BCM2712) ─────────────────────────────────
-      # WHY build from source: Ubuntu u-boot-rpi only ships rpi_3/rpi_4/rpi_arm64.
-      # rpi_arm64 lacks BCM2712 support (crashes on RPi5). worproject/rpi5-uefi
-      # boots but only provides ACPI — the RPi vendor kernel needs a Device Tree.
-      # U-Boot rpi_5 gets the DTB from the EEPROM and hands it to Linux via the
-      # UEFI DTB protocol, giving "Loaded DTB from configuration table" instead of
-      # "Generating empty DTB", so RP1 PCIe/Ethernet/USB drivers can probe.
+      # ── Build U-Boot rpi_5 (cached by version pin) ────────────────────────────
+      - name: Cache U-Boot rpi_5 binary
+        uses: actions/cache@v4
+        with:
+          path: /tmp/u-boot-rpi5
+          key: uboot-rpi5-${{ env.UBOOT_VERSION }}
+
       - name: Build U-Boot for RPi5 (rpi_5 / BCM2712)
         run: |
-          apt-get install -y -q make gcc bc bison flex libssl-dev \
-            device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools
-          git clone --depth 1 --branch v2025.10 \
-            https://github.com/u-boot/u-boot.git /tmp/u-boot-src
-          make -C /tmp/u-boot-src rpi_5_defconfig
-          make -C /tmp/u-boot-src -j$(nproc)
-          ls -lh /tmp/u-boot-src/u-boot.bin
+          if [ -f /tmp/u-boot-rpi5/u-boot.bin ]; then
+            echo "==> U-Boot cache hit, skipping build"
+          else
+            apt-get install -y -q make gcc bc bison flex libssl-dev \
+              device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools
+            git clone --depth 1 --branch ${{ env.UBOOT_VERSION }} \
+              https://github.com/u-boot/u-boot.git /tmp/u-boot-src
+            make -C /tmp/u-boot-src rpi_5_defconfig
+            make -C /tmp/u-boot-src -j$(nproc)
+            mkdir -p /tmp/u-boot-rpi5
+            cp /tmp/u-boot-src/u-boot.bin /tmp/u-boot-rpi5/
+          fi
+          ls -lh /tmp/u-boot-rpi5/u-boot.bin
 
+      # ── Inject firmware into boot partition ───────────────────────────────────
       - name: Inject RPi5 firmware into metal image boot partition
         run: |
           cd _out
 
-          # Decompress if imager already compressed it
           if [ -f metal-arm64.raw.zst ] && [ ! -f metal-arm64.raw ]; then
             zstd -d metal-arm64.raw.zst && rm metal-arm64.raw.zst
           fi
 
-          # Extract RPi5 DTBs from the overlay image (kernel-matching DTBs for RPi 6.12.25)
           docker create --name rpi-overlay --entrypoint /bin/sh ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0
           mkdir -p /tmp/rpi-overlay
           docker export rpi-overlay | tar x -C /tmp/rpi-overlay
           docker rm rpi-overlay
 
-          # Mount EFI partition (partition 1) via loop device
           LOOP=$(sudo losetup -f --show -P metal-arm64.raw)
           sudo mkdir -p /mnt/efi
           sudo mount "${LOOP}p1" /mnt/efi
 
-          # U-Boot rpi_5: BCM2712-aware, passes EEPROM DTB to OS via UEFI DTB protocol
-          sudo cp /tmp/u-boot-src/u-boot.bin /mnt/efi/
-
-          # RPi5 DTBs and overlays from sbc-raspberrypi (RPi 6.12.25, matching our kernel)
+          sudo cp /tmp/u-boot-rpi5/u-boot.bin /mnt/efi/
           sudo cp /tmp/rpi-overlay/artifacts/rpi_5/bcm2712*.dtb /mnt/efi/
           sudo cp -r /tmp/rpi-overlay/artifacts/rpi_5/overlays /mnt/efi/
-
-          # config.txt: EEPROM → U-Boot rpi_5 (UEFI + DTB handover) → systemd-boot → Talos
           printf 'arm_64bit=1\nenable_uart=1\nuart_2ndstage=1\nkernel=u-boot.bin\n[pi5]\narm_boost=1\ndtoverlay=bcm2712d0\n' \
             | sudo tee /mnt/efi/config.txt
 
