@@ -266,7 +266,7 @@ jobs:
           if [ -f /tmp/u-boot-rpi5/u-boot.bin ]; then
             echo "==> U-Boot cache hit, skipping build"
           else
-            apt-get install -y -q make gcc bc bison flex libssl-dev \
+            sudo apt-get install -y -q make gcc bc bison flex libssl-dev \
               device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools
             git clone --depth 1 --branch ${{ env.UBOOT_VERSION }} \
               https://github.com/u-boot/u-boot.git /tmp/u-boot-src
