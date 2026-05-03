@@ -294,7 +294,7 @@ jobs:
           # version used by talos-rpi5/sbc-raspberrypi5 and ensures bcm2712d0-rpi-5-b.dtb
           # (D0 stepping) is present — without it RP1 PCIe never initialises.
           git clone --depth 1 --branch ${{ env.RPI_FW_VERSION }} \
-            --filter=blob:limit:1m --sparse \
+            --filter=blob:limit=1m --sparse \
             https://github.com/raspberrypi/firmware.git /tmp/rpi-firmware
           git -C /tmp/rpi-firmware sparse-checkout set boot
           git -C /tmp/rpi-firmware checkout
