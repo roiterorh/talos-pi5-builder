@@ -225,7 +225,7 @@ jobs:
             PUSH=true \
             PKG_KERNEL="${{ env.REGISTRY }}/${{ env.USERNAME }}/kernel:${{ env.PKGS_TAG }}" \
             INSTALLER_ARCH=arm64 PLATFORM=linux/arm64 \
-            IMAGER_ARGS="--overlay-name=rpi_5 --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0" \
+            IMAGER_ARGS="--overlay-name=rpi5 --overlay-image=ghcr.io/talos-rpi5/sbc-raspberrypi5:7d04484-v1.11.0-1-g34f19c2" \
             kernel initramfs imager installer-base installer
           # Tag installer and imager with deterministic cache key
           crane tag \
@@ -252,69 +252,8 @@ jobs:
             "${{ env.REGISTRY }}/${{ env.USERNAME }}/imager:${{ env.TALOS_TAG }}" \
             metal --arch arm64 \
             --base-installer-image="${{ env.REGISTRY }}/${{ env.USERNAME }}/installer:${{ steps.ver.outputs.talos }}" \
-            --overlay-name=rpi_5 \
-            --overlay-image=ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0 \
-            --extra-kernel-arg="panic=-1"
-
-      # ── Build U-Boot rpi_5 (cached by version pin) ────────────────────────────
-      - name: Cache U-Boot rpi_5 binary
-        uses: actions/cache@v4
-        with:
-          path: /tmp/u-boot-rpi5
-          key: uboot-rpi5-${{ env.UBOOT_VERSION }}
-
-      - name: Build U-Boot for RPi5 (rpi_5 / BCM2712)
-        run: |
-          if [ -f /tmp/u-boot-rpi5/u-boot.bin ]; then
-            echo "==> U-Boot cache hit, skipping build"
-          else
-            sudo apt-get install -y -q make gcc bc bison flex libssl-dev \
-              device-tree-compiler swig python3-setuptools python3-dev python3-pyelftools \
-              libgnutls28-dev
-            git clone --depth 1 --branch ${{ env.UBOOT_VERSION }} \
-              https://github.com/talos-rpi5/u-boot.git /tmp/u-boot-src
-            make -C /tmp/u-boot-src rpi_5_defconfig
-            make -C /tmp/u-boot-src -j$(nproc) HOSTLDLIBS_mkimage="-lssl -lcrypto" u-boot.bin
-            mkdir -p /tmp/u-boot-rpi5
-            cp /tmp/u-boot-src/u-boot.bin /tmp/u-boot-rpi5/
-          fi
-          ls -lh /tmp/u-boot-rpi5/u-boot.bin
-
-      # ── Inject firmware into boot partition ───────────────────────────────────
-      - name: Inject RPi5 firmware into metal image boot partition
-        run: |
-          cd _out
-
-          if [ -f metal-arm64.raw.zst ] && [ ! -f metal-arm64.raw ]; then
-            zstd -d metal-arm64.raw.zst && rm metal-arm64.raw.zst
-          fi
-
-          # Pull DTBs and overlays from the RPi firmware package that matches
-          # our kernel source (stable_20250428 / 6.12.25). This is the same
-          # version used by talos-rpi5/sbc-raspberrypi5 and ensures bcm2712d0-rpi-5-b.dtb
-          # (D0 stepping) is present — without it RP1 PCIe never initialises.
-          git clone --depth 1 --branch ${{ env.RPI_FW_VERSION }} \
-            --filter=blob:limit=1m --sparse \
-            https://github.com/raspberrypi/firmware.git /tmp/rpi-firmware
-          git -C /tmp/rpi-firmware sparse-checkout set boot
-          git -C /tmp/rpi-firmware checkout
-
-          LOOP=$(sudo losetup -f --show -P metal-arm64.raw)
-          sudo mkdir -p /mnt/efi
-          sudo mount "${LOOP}p1" /mnt/efi
-
-          sudo cp /tmp/u-boot-rpi5/u-boot.bin /mnt/efi/
-          sudo cp /tmp/rpi-firmware/boot/bcm2712*.dtb /mnt/efi/
-          sudo mkdir -p /mnt/efi/overlays
-          sudo cp /tmp/rpi-firmware/boot/overlays/*.dtbo /mnt/efi/overlays/
-          printf 'gpu_mem=32\nkernel=u-boot.bin\narm_64bit=1\narm_boost=1\nenable_uart=1\n' \
-            | sudo tee /mnt/efi/config.txt
-
-          echo "==> Boot partition contents after injection:"
-          ls /mnt/efi/
-
-          sudo umount /mnt/efi
-          sudo losetup -d "${LOOP}"
+            --overlay-name=rpi5 \
+            --overlay-image=ghcr.io/talos-rpi5/sbc-raspberrypi5:7d04484-v1.11.0-1-g34f19c2
 
       - name: Compress disk image
         run: |
